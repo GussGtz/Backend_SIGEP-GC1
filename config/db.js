@@ -1,12 +1,8 @@
-import pkg from "pg";
-const { Pool } = pkg;
+const { Pool } = require("pg");
 
 const pool = new Pool({
-  host: "localhost",    // luego Render te dará otro
-  user: "postgres",     // usuario default
-  password: "tu_password",
-  database: "sigepgc",  // tu nueva BD
-  port: 5432
+  connectionString: "postgresql://sigep_gc_user:RihmF80BMzubBhhfrpocQgr9hpEUV7RH@dpg-d2ho2cndiees738f6c30-a.oregon-postgres.render.com/sigep_gc",
+  ssl: { rejectUnauthorized: false }
 });
 
-export default pool;
+module.exports = pool;
