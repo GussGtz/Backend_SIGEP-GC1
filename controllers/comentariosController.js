@@ -1,14 +1,22 @@
 // controllers/comentariosController.js
 const pool = require('../config/db');
 
+const AREAS = ['ventas', 'contabilidad', 'produccion'];
+
 // GET /api/pedidos/comentario/:pedidoId/:area  (individual)
 const obtenerComentario = async (req, res) => {
   const { pedidoId, area } = req.params;
+  const id = parseInt(pedidoId, 10);
+  const areaKey = (area || '').toLowerCase();
+
+  if (!id || !AREAS.includes(areaKey)) {
+    return res.status(400).json({ message: 'Parámetros inválidos (pedidoId/area)' });
+  }
 
   try {
     const result = await pool.query(
       'SELECT comentarios FROM pedido_estatus WHERE pedido_id = $1 AND area = $2',
-      [pedidoId, area]
+      [id, areaKey]
     );
 
     if (result.rowCount === 0) {
@@ -25,6 +33,9 @@ const obtenerComentario = async (req, res) => {
 // GET /api/pedidos/comentario/:pedidoId  (todos del pedido)
 const obtenerComentariosPorPedido = async (req, res) => {
   const { pedidoId } = req.params;
+  const id = parseInt(pedidoId, 10);
+
+  if (!id) return res.status(400).json({ message: 'pedidoId inválido' });
 
   try {
     const result = await pool.query(
@@ -33,7 +44,7 @@ const obtenerComentariosPorPedido = async (req, res) => {
        WHERE pedido_id = $1
          AND comentarios IS NOT NULL
          AND comentarios <> ''`,
-      [pedidoId]
+      [id]
     );
 
     return res.json(result.rows);
@@ -48,14 +59,20 @@ const actualizarComentario = async (req, res) => {
   const { pedidoId, area } = req.params;
   const { comentario } = req.body;
 
-  if (!comentario && comentario !== '') {
+  const id = parseInt(pedidoId, 10);
+  const areaKey = (area || '').toLowerCase();
+
+  if (!id || !AREAS.includes(areaKey)) {
+    return res.status(400).json({ message: 'Parámetros inválidos (pedidoId/area)' });
+  }
+  if (comentario === undefined || comentario === null) {
     return res.status(400).json({ message: 'Comentario requerido' });
   }
 
   try {
     const result = await pool.query(
       'UPDATE pedido_estatus SET comentarios = $1 WHERE pedido_id = $2 AND area = $3',
-      [comentario.trim(), pedidoId, area]
+      [String(comentario).trim(), id, areaKey]
     );
 
     if (result.rowCount === 0) {
@@ -72,11 +89,17 @@ const actualizarComentario = async (req, res) => {
 // DELETE /api/pedidos/comentario/:pedidoId/:area
 const eliminarComentario = async (req, res) => {
   const { pedidoId, area } = req.params;
+  const id = parseInt(pedidoId, 10);
+  const areaKey = (area || '').toLowerCase();
+
+  if (!id || !AREAS.includes(areaKey)) {
+    return res.status(400).json({ message: 'Parámetros inválidos (pedidoId/area)' });
+  }
 
   try {
     const result = await pool.query(
       'UPDATE pedido_estatus SET comentarios = NULL WHERE pedido_id = $1 AND area = $2',
-      [pedidoId, area]
+      [id, areaKey]
     );
 
     if (result.rowCount === 0) {
