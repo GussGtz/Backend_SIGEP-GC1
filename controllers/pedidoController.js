@@ -6,15 +6,22 @@ const crearPedido = async (req, res) => {
   const { numero_pedido, fecha_entrega } = req.body;
   const userId = req.user.id;
 
+  if (!numero_pedido || !fecha_entrega) {
+    return res.status(400).json({ message: 'numero_pedido y fecha_entrega son obligatorios' });
+  }
+
+  let client;
   try {
-    const existe = await pool.query('SELECT 1 FROM pedidos WHERE numero_pedido = $1', [numero_pedido]);
-    if (existe.rowCount > 0) {
+    // verifica duplicado rápido (fuera de la transacción está bien)
+    const dup = await pool.query('SELECT 1 FROM pedidos WHERE numero_pedido = $1', [numero_pedido]);
+    if (dup.rowCount > 0) {
       return res.status(400).json({ message: 'Ese número de pedido ya existe' });
     }
 
-    await pool.query('BEGIN');
+    client = await pool.connect();
+    await client.query('BEGIN');
 
-    const nuevo = await pool.query(
+    const nuevo = await client.query(
       `INSERT INTO pedidos (numero_pedido, fecha_entrega, creado_por)
        VALUES ($1, $2, $3)
        RETURNING id`,
@@ -24,19 +31,29 @@ const crearPedido = async (req, res) => {
     const pedidoId = nuevo.rows[0].id;
     const areas = ['contabilidad', 'ventas', 'produccion'];
 
-    await Promise.all(
-      areas.map(area =>
-        pool.query('INSERT INTO pedido_estatus (pedido_id, area) VALUES ($1, $2)', [pedidoId, area])
-      )
-    );
+    // insertar estatus iniciales
+    for (const area of areas) {
+      await client.query(
+        'INSERT INTO pedido_estatus (pedido_id, area) VALUES ($1, $2)',
+        [pedidoId, area]
+      );
+    }
 
-    await pool.query('COMMIT');
+    await client.query('COMMIT');
 
     return res.status(201).json({ message: 'Pedido creado correctamente', pedidoId });
   } catch (err) {
-    await pool.query('ROLLBACK').catch(() => {});
+    if (client) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+    }
     console.error('[ERROR crearPedido]', err);
+    // códigos comunes PG:
+    if (err.code === '23505') {
+      return res.status(400).json({ message: 'Duplicado: ya existe un pedido con ese número' });
+    }
     return res.status(500).json({ message: 'Error al crear el pedido', error: err.message });
+  } finally {
+    if (client) client.release();
   }
 };
 
@@ -49,8 +66,8 @@ const obtenerPedidos = async (req, res) => {
       SELECT
         p.id,
         p.numero_pedido,
-        TO_CHAR(p.fecha_entrega, 'YYYY-MM-DD')  AS fecha_entrega,
-        TO_CHAR(p.fecha_creacion, 'YYYY-MM-DD HH24:MI') AS fecha_creacion,
+        TO_CHAR(p.fecha_entrega, 'YYYY-MM-DD')               AS fecha_entrega,
+        TO_CHAR(p.fecha_creacion, 'YYYY-MM-DD HH24:MI')      AS fecha_creacion,
         e.area,
         e.estatus,
         e.comentarios
@@ -148,28 +165,35 @@ const actualizarEstatus = async (req, res) => {
 const eliminarPedido = async (req, res) => {
   const pedidoId = req.params.id;
 
+  let client;
   try {
-    await pool.query('BEGIN');
+    client = await pool.connect();
+    await client.query('BEGIN');
 
-    await pool.query('DELETE FROM pedido_estatus WHERE pedido_id = $1', [pedidoId]);
-    const del = await pool.query('DELETE FROM pedidos WHERE id = $1', [pedidoId]);
+    await client.query('DELETE FROM pedido_estatus WHERE pedido_id = $1', [pedidoId]);
+    const del = await client.query('DELETE FROM pedidos WHERE id = $1', [pedidoId]);
 
     if (del.rowCount === 0) {
-      await pool.query('ROLLBACK');
+      await client.query('ROLLBACK');
       return res.status(404).json({ message: 'Pedido no encontrado' });
     }
 
-    await pool.query('COMMIT');
+    await client.query('COMMIT');
     return res.json({ message: '✅ Pedido eliminado correctamente' });
   } catch (err) {
-    await pool.query('ROLLBACK').catch(() => {});
+    if (client) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+    }
     console.error('[ERROR eliminarPedido]', err);
     return res.status(500).json({ message: 'Error al eliminar el pedido', error: err.message });
+  } finally {
+    if (client) client.release();
   }
 };
 
 // DELETE /api/pedidos/completados  (admin)
 const eliminarPedidosCompletados = async (req, res) => {
+  let client;
   try {
     const comp = await pool.query(`
       SELECT p.id
@@ -185,16 +209,21 @@ const eliminarPedidosCompletados = async (req, res) => {
 
     const ids = comp.rows.map(r => r.id);
 
-    await pool.query('BEGIN');
-    await pool.query('DELETE FROM pedido_estatus WHERE pedido_id = ANY($1::int[])', [ids]);
-    await pool.query('DELETE FROM pedidos WHERE id = ANY($1::int[])', [ids]);
-    await pool.query('COMMIT');
+    client = await pool.connect();
+    await client.query('BEGIN');
+    await client.query('DELETE FROM pedido_estatus WHERE pedido_id = ANY($1::int[])', [ids]);
+    await client.query('DELETE FROM pedidos WHERE id = ANY($1::int[])', [ids]);
+    await client.query('COMMIT');
 
     return res.json({ message: `✅ ${ids.length} pedidos completados eliminados correctamente.` });
   } catch (err) {
-    await pool.query('ROLLBACK').catch(() => {});
+    if (client) {
+      try { await client.query('ROLLBACK'); } catch (_) {}
+    }
     console.error('[ERROR eliminarPedidosCompletados]', err);
     return res.status(500).json({ message: 'Error al eliminar pedidos completados', error: err.message });
+  } finally {
+    if (client) client.release();
   }
 };
 
