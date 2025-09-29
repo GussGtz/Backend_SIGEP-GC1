@@ -3,7 +3,7 @@ const { Pool } = require('pg');
 
 const connectionString =
   process.env.DATABASE_URL ||
-  'postgresql://sigep_gc_user:RihmF80BMzubBhhfrpocQgr9hpEUV7RH@dpg-d2ho2cndiees738f6c30-a.oregon-postgres.render.com/sigep_gc?sslmode=require';
+  'postgresql://sigep_gc_6fuz_user:dV73lIdFLrQD53xHsypH2nkOh0ZW6TIy@dpg-d3db9u8dl3ps73dlnt9g-a.oregon-postgres.render.com/sigep_gc_6fuz';
 
 const pool = new Pool({
   connectionString,
