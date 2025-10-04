@@ -126,4 +126,110 @@ router.post('/logout', (req, res) => {
   return res.json({ success: true });
 });
 
+
+// Importamos módulos necesarios para este flujo
+const crypto = require('crypto');              // Para generar tokens únicos y seguros
+const sendEmail = require('../utils/sendEmail'); // Nuestra función reutilizable que usa Resend
+
+// 🔹 Endpoint: POST /api/auth/forgot-password
+router.post('/forgot-password', async (req, res) => {
+  const { email } = req.body;
+
+  // Validación básica del campo email
+  if (!email) {
+    return res.status(400).json({ message: 'Correo electrónico requerido' });
+  }
+
+  try {
+    // 1️⃣ Verificamos si el usuario existe en la base de datos
+    const userQuery = await pool.query('SELECT id FROM usuarios WHERE email = $1', [email]);
+
+    if (userQuery.rowCount === 0) {
+      return res.status(404).json({ message: 'No existe un usuario con ese correo' });
+    }
+
+    // 2️⃣ Generamos un token aleatorio y fecha de expiración
+    const token = crypto.randomBytes(32).toString('hex');  // Token único y difícil de adivinar
+    const expires = new Date(Date.now() + 15 * 60 * 1000); // Expira en 15 minutos
+
+    // 3️⃣ Guardamos el token y expiración en la base de datos
+    await pool.query(
+      'UPDATE usuarios SET reset_token = $1, reset_expires = $2 WHERE email = $3',
+      [token, expires, email]
+    );
+
+    // 4️⃣ Construimos el enlace de recuperación (enlace hacia el frontend)
+    const resetUrl = `${process.env.FRONTEND_URL}/reset-password.html?token=${token}`;
+
+    // 5️⃣ Estructuramos el contenido del correo
+    const html = `
+      <div style="font-family: Arial, sans-serif; color: #333;">
+        <h2>Restablecer contraseña - SIGEP GC</h2>
+        <p>Has solicitado restablecer tu contraseña.</p>
+        <p>Haz clic en el siguiente enlace para crear una nueva contraseña:</p>
+        <a href="${resetUrl}"
+          style="display:inline-block; background:#0d6efd; color:#fff;
+          padding:10px 20px; text-decoration:none; border-radius:6px;">
+          Restablecer contraseña
+        </a>
+        <p style="margin-top:10px;">Este enlace expirará en <strong>15 minutos</strong>.</p>
+        <p style="font-size:0.9rem; color:#777;">Si no solicitaste este cambio, ignora este mensaje.</p>
+      </div>
+    `;
+
+    // 6️⃣ Enviamos el correo
+    await sendEmail(email, 'Recupera tu acceso a SIGEP GC', html);
+
+    // 7️⃣ Respondemos al cliente
+    return res.json({ message: 'Correo de recuperación enviado correctamente.' });
+  } catch (err) {
+    console.error('💥 Error en forgot-password:', err);
+    return res.status(500).json({ message: 'Error del servidor', error: err.message });
+  }
+});
+// 🔹 Endpoint: POST /api/auth/reset-password
+router.post('/reset-password', async (req, res) => {
+  const { token, password } = req.body;
+
+  // Validaciones básicas
+  if (!token || !password) {
+    return res.status(400).json({ message: 'Token y nueva contraseña son requeridos' });
+  }
+
+  try {
+    // 1️⃣ Buscamos al usuario con ese token válido y no expirado
+    const result = await pool.query(
+      `SELECT id, email, reset_expires
+       FROM usuarios
+       WHERE reset_token = $1 AND reset_expires > NOW()`,
+      [token]
+    );
+
+    // Si no hay resultados, token inválido o expirado
+    if (result.rowCount === 0) {
+      return res.status(400).json({ message: 'Token inválido o expirado' });
+    }
+
+    const user = result.rows[0];
+
+    // 2️⃣ Encriptamos la nueva contraseña
+    const bcrypt = require('bcryptjs');
+    const hashed = await bcrypt.hash(password, 10);
+
+    // 3️⃣ Actualizamos la contraseña y limpiamos los campos de token
+    await pool.query(
+      `UPDATE usuarios
+       SET password_hash = $1, reset_token = NULL, reset_expires = NULL
+       WHERE id = $2`,
+      [hashed, user.id]
+    );
+
+    // 4️⃣ Respuesta al cliente
+    return res.json({ message: 'Contraseña restablecida correctamente.' });
+  } catch (err) {
+    console.error('💥 Error en reset-password:', err);
+    return res.status(500).json({ message: 'Error al restablecer la contraseña', error: err.message });
+  }
+});
+
 module.exports = router;
