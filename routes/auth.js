@@ -4,13 +4,17 @@ const bcrypt = require('bcryptjs');
 const pool = require('../config/db');
 const generateToken = require('../utils/generateToken');
 const { verifyToken } = require('../middlewares/authMiddleware');
+const crypto = require('crypto');
+const sendEmail = require('../utils/sendEmail');
 
 const router = express.Router();
 
+// ================== CONFIG ==================
 const isProd = process.env.NODE_ENV === 'production';
 const COOKIE_NAME = process.env.COOKIE_NAME || 'token';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://frontend-sigep-gc.onrender.com';
 
-// POST /api/auth/register
+// ================== REGISTRO ==================
 router.post('/register', async (req, res) => {
   const { nombre, email, password, role_id, departamento } = req.body;
 
@@ -42,7 +46,6 @@ router.post('/register', async (req, res) => {
       email: user.email
     });
 
-    // Opcional: setear cookie también al registrar
     res.cookie(COOKIE_NAME, token, {
       httpOnly: true,
       secure: isProd,
@@ -51,14 +54,14 @@ router.post('/register', async (req, res) => {
       maxAge: 1000 * 60 * 60 * 24 * 7,
     });
 
-    return res.json({ user }); // ya no es necesario devolver "token"
+    return res.json({ user });
   } catch (err) {
     console.error('💥 Error en register:', err);
     return res.status(500).json({ message: 'Error en el servidor', error: err.message });
   }
 });
 
-// POST /api/auth/login
+// ================== LOGIN ==================
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body || {};
@@ -84,6 +87,7 @@ router.post('/login', async (req, res) => {
       email: user.email
     });
 
+    // ✅ Cookie JWT segura y persistente
     res.cookie(COOKIE_NAME, token, {
       httpOnly: true,
       secure: isProd,
@@ -92,14 +96,24 @@ router.post('/login', async (req, res) => {
       maxAge: 1000 * 60 * 60 * 24 * 7,
     });
 
-    return res.json({ user: { id: user.id, nombre: user.nombre, email: user.email, role_id: user.role_id, departamento: user.departamento } });
+    return res.json({
+      success: true,
+      message: 'Inicio de sesión exitoso',
+      user: {
+        id: user.id,
+        nombre: user.nombre,
+        email: user.email,
+        role_id: user.role_id,
+        departamento: user.departamento
+      }
+    });
   } catch (err) {
     console.error('💥 Error en login:', err);
     return res.status(500).json({ message: 'Error en el servidor', error: err.message });
   }
 });
 
-// GET /api/auth/me
+// ================== PERFIL / SESIÓN ==================
 router.get('/me', verifyToken, async (req, res) => {
   try {
     const result = await pool.query(
@@ -115,7 +129,7 @@ router.get('/me', verifyToken, async (req, res) => {
   }
 });
 
-// POST /api/auth/logout  (opcional)
+// ================== LOGOUT ==================
 router.post('/logout', (req, res) => {
   res.clearCookie(COOKIE_NAME, {
     httpOnly: true,
@@ -126,97 +140,66 @@ router.post('/logout', (req, res) => {
   return res.json({ success: true });
 });
 
-
-// Importamos módulos necesarios para este flujo
-const crypto = require('crypto');              // Para generar tokens únicos y seguros
-const sendEmail = require('../utils/sendEmail'); // Nuestra función reutilizable que usa Resend
-
-// 🔹 Endpoint: POST /api/auth/forgot-password
+// ================== RECUPERAR CONTRASEÑA ==================
 router.post('/forgot-password', async (req, res) => {
   const { email } = req.body;
 
-  // Validación básica del campo email
-  if (!email) {
-    return res.status(400).json({ message: 'Correo electrónico requerido' });
-  }
+  if (!email) return res.status(400).json({ message: 'Correo electrónico requerido' });
 
   try {
-    // 1️⃣ Verificamos si el usuario existe en la base de datos
     const userQuery = await pool.query('SELECT id FROM usuarios WHERE email = $1', [email]);
-
     if (userQuery.rowCount === 0) {
       return res.status(404).json({ message: 'No existe un usuario con ese correo' });
     }
 
-    // 2️⃣ Generamos un token aleatorio y fecha de expiración
-    const token = crypto.randomBytes(32).toString('hex');  // Token único y difícil de adivinar
-    const expires = new Date(Date.now() + 15 * 60 * 1000); // Expira en 15 minutos
+    const token = crypto.randomBytes(32).toString('hex');
+    const expires = new Date(Date.now() + 15 * 60 * 1000);
 
-    // 3️⃣ Guardamos el token y expiración en la base de datos
     await pool.query(
       'UPDATE usuarios SET reset_token = $1, reset_expires = $2 WHERE email = $3',
       [token, expires, email]
     );
 
-    // 4️⃣ Construimos el enlace de recuperación (enlace hacia el frontend)
-    const resetUrl = `${process.env.FRONTEND_URL}/reset-password.html?token=${token}`;
+    const resetUrl = `${FRONTEND_URL}/reset-password.html?token=${token}`;
 
-    // 5️⃣ Estructuramos el contenido del correo
     const html = `
       <div style="font-family: Arial, sans-serif; color: #333;">
         <h2>Restablecer contraseña - SIGEP GC</h2>
         <p>Has solicitado restablecer tu contraseña.</p>
-        <p>Haz clic en el siguiente enlace para crear una nueva contraseña:</p>
-        <a href="${resetUrl}"
-          style="display:inline-block; background:#0d6efd; color:#fff;
-          padding:10px 20px; text-decoration:none; border-radius:6px;">
-          Restablecer contraseña
-        </a>
-        <p style="margin-top:10px;">Este enlace expirará en <strong>15 minutos</strong>.</p>
-        <p style="font-size:0.9rem; color:#777;">Si no solicitaste este cambio, ignora este mensaje.</p>
+        <a href="${resetUrl}" style="display:inline-block;background:#0d6efd;color:#fff;padding:10px 20px;border-radius:6px;text-decoration:none;">Restablecer contraseña</a>
+        <p style="margin-top:10px;">El enlace expirará en <strong>15 minutos</strong>.</p>
       </div>
     `;
 
-    // 6️⃣ Enviamos el correo
     await sendEmail(email, 'Recupera tu acceso a SIGEP GC', html);
 
-    // 7️⃣ Respondemos al cliente
     return res.json({ message: 'Correo de recuperación enviado correctamente.' });
   } catch (err) {
     console.error('💥 Error en forgot-password:', err);
     return res.status(500).json({ message: 'Error del servidor', error: err.message });
   }
 });
-// 🔹 Endpoint: POST /api/auth/reset-password
+
+// ================== RESTABLECER CONTRASEÑA ==================
 router.post('/reset-password', async (req, res) => {
   const { token, password } = req.body;
-
-  // Validaciones básicas
   if (!token || !password) {
     return res.status(400).json({ message: 'Token y nueva contraseña son requeridos' });
   }
 
   try {
-    // 1️⃣ Buscamos al usuario con ese token válido y no expirado
     const result = await pool.query(
-      `SELECT id, email, reset_expires
-       FROM usuarios
-       WHERE reset_token = $1 AND reset_expires > NOW()`,
+      `SELECT id FROM usuarios WHERE reset_token = $1 AND reset_expires > NOW()`,
       [token]
     );
 
-    // Si no hay resultados, token inválido o expirado
     if (result.rowCount === 0) {
       return res.status(400).json({ message: 'Token inválido o expirado' });
     }
 
     const user = result.rows[0];
-
-    // 2️⃣ Encriptamos la nueva contraseña
-    const bcrypt = require('bcryptjs');
     const hashed = await bcrypt.hash(password, 10);
 
-    // 3️⃣ Actualizamos la contraseña y limpiamos los campos de token
     await pool.query(
       `UPDATE usuarios
        SET password_hash = $1, reset_token = NULL, reset_expires = NULL
@@ -224,7 +207,6 @@ router.post('/reset-password', async (req, res) => {
       [hashed, user.id]
     );
 
-    // 4️⃣ Respuesta al cliente
     return res.json({ message: 'Contraseña restablecida correctamente.' });
   } catch (err) {
     console.error('💥 Error en reset-password:', err);
